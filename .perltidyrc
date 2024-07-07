@@ -1,0 +1,5 @@
+-et=4
+-i=4
+-novalign
+-l=0       # Set line length to 0 (unlimited)
+-nbbc      # No break before comma
