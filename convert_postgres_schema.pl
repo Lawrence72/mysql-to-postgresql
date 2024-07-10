@@ -70,6 +70,7 @@ sub process_schema {
 		$line =~ s/\bsmallint\(\d+\)/smallint/gi;
 		$line =~ s/\blongtext\b/text/gi;
 		$line =~ s/"([^"]+)"\s+double/"$1" double precision/gi;
+		$line =~ s/\b(tiny|medium|long)text\b/text/gi;
 		$line =~ s/\bfloat\b/numeric/gi;
 		$line =~ s/\bmediumint\b/integer/gi;
 
@@ -106,7 +107,9 @@ sub process_schema {
 
 		# Convert FULLTEXT indexes to comments
 		if ( $line =~ /^\s*FULLTEXT\s+KEY\s+"([^"]+)"\s+\("([^"]+)"\)/i ) {
-			push @post_process_lines, "-- $current_table had a full text index '$1' on column \"$2\"\n";
+			my $index_name = $1;
+			my $column_name = $2;
+			push @post_process_lines, "CREATE INDEX idx_fts_${current_table}_$index_name ON \"$current_table\" USING GIN (to_tsvector('english', \"$column_name\"));\n";
 			next;
 		}
 
