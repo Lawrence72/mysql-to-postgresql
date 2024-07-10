@@ -2,6 +2,7 @@
 use strict;
 use warnings;
 use Time::HiRes qw(time);
+use Digest::MD5 qw(md5_hex);
 
 # Record start time for performance measurement
 my $start_time = time();
@@ -9,13 +10,17 @@ my $start_time = time();
 # Define input and output file names
 my $original_schema_file = 'original_schema.sql';
 my $converted_schema_file = 'converted_schema.sql';
-my $post_process_file = 'converted_after.sql';
-my $pre_process_file = 'converted_before.sql';
+my $post_process_file = 'run_after.sql';
+my $pre_process_file = 'run_before.sql';
+my $enum_types_file = 'enum_types.sql';
+my $drop_tables_file = 'drop_tables.sql';
+my %enum_types;
+my $enum_counter = 1;
 
 my $current_table = '';
 
 sub process_schema {
-	my ( $original_schema_file, $converted_schema_file, $post_process_file, $pre_process_file ) = @_;
+	my ( $original_schema_file, $converted_schema_file, $post_process_file, $pre_process_file, $enum_types_file, $drop_tables_file ) = @_;
 
 	# Open and read the original schema file
 	open my $original_schema_data, '<', $original_schema_file
@@ -30,11 +35,18 @@ sub process_schema {
 	  or die "Unable to open file: $!";
 	open my $post_process_data, '>', $post_process_file
 	  or die "Unable to open file: $!";
+	open my $enum_types_data, '>', $enum_types_file
+	  or die "Unable to open file: $!";
+	open my $drop_tables_data, '>', $drop_tables_file
+	  or die "Unable to open file: $!";
 
 	# Initialize arrays to store processed lines
 	my @post_process_lines;
 	my @pre_process_lines;
 	my @converted_lines;
+	my @enum_lines;
+	my @drop_enum_lines;
+	my @drop_table_lines;
 
 	# Process each line of the original schema
 	for my $line (@lines) {
@@ -45,6 +57,7 @@ sub process_schema {
 		# Detect current table being processed
 		if ( $line =~ /CREATE\s+TABLE\s+"([^"]+)"/ ) {
 			$current_table = $1;
+			push @drop_table_lines, "DROP TABLE IF EXISTS \"$current_table\" CASCADE;\n";
 		}
 
 		# Convert auto-increment columns
@@ -133,13 +146,29 @@ sub process_schema {
 		if ( $line =~ /"([^"]+)"\s+enum\(([^)]+)\)/ ) {
 			my $column_name = $1;
 			my $enum_values = $2;
-			my @items = $enum_values =~ /'([^']*)'/g;
-			my $max_length = 1;
-			for my $item (@items) {
-				my $length = length($item);
-				$max_length = $length if $length > $max_length;
+			if ( $enum_values !~ /''/ ) {
+				$enum_values .= ",''";
 			}
-			$line =~ s/enum\([^)]+\)/varchar($max_length)/;
+
+			my @items = $enum_values =~ /'([^']*)'/g;
+
+			my $sorted_enums = join( ',', sort @items );
+
+			my $enum_type_name;
+			if ( exists $enum_types{$sorted_enums} ) {
+				$enum_type_name = $enum_types{$sorted_enums};
+			}
+			else {
+				$enum_type_name = create_enum_type_name($sorted_enums);
+				$enum_types{$sorted_enums} = $enum_type_name;
+
+				# Add CREATE TYPE statement to post-processing
+				push @enum_lines, "CREATE TYPE $enum_type_name AS ENUM ($enum_values);\n";
+				push @drop_enum_lines, "DROP TYPE IF EXISTS $enum_type_name;\n";
+			}
+
+			# Replace the line with the new ENUM type
+			$line =~ s/enum\([^)]+\)/$enum_type_name/;
 		}
 
 		# Simplify timestamp default
@@ -170,11 +199,16 @@ sub process_schema {
 	print $post_process_data @post_process_lines;
 	print $pre_process_data @pre_process_lines;
 	print $converted_schema_data @converted_lines;
+	print $enum_types_data @enum_lines;
+	print $drop_tables_data @drop_table_lines;
+	print $drop_tables_data @drop_enum_lines;
 
 	# Close all file handles
 	close $converted_schema_data;
 	close $post_process_data;
 	close $pre_process_data;
+	close $enum_types_data;
+	close $drop_tables_data;
 
 	return;
 }
@@ -204,9 +238,15 @@ sub sanity_check_schema {
 	return;
 }
 
+sub create_enum_type_name {
+	my ($values) = @_;
+	my $hash = substr( md5_hex($values), 0, 8 );
+	return "enum_${hash}";
+}
+
 # Execute the schema conversion process
 eval {
-	process_schema( $original_schema_file, $converted_schema_file, $post_process_file, $pre_process_file );
+	process_schema( $original_schema_file, $converted_schema_file, $post_process_file, $pre_process_file, $enum_types_file, $drop_tables_file );
 	sanity_check_schema($converted_schema_file);
 };
 if ($@) {
